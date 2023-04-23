@@ -1,0 +1,166 @@
+import pandas as pd
+import numpy as np
+import os
+import matplotlib
+import matplotlib.pyplot as plt
+plt.style.use('ggplot')
+import seaborn as sns
+sns.set(style='whitegrid')
+
+from wordcloud import WordCloud
+
+from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
+from sklearn.model_selection import train_test_split
+from sklearn.decomposition import PCA, TruncatedSVD
+from sklearn.metrics import classification_report,confusion_matrix
+
+from collections import defaultdict
+from collections import Counter
+
+import re
+import gensim
+import string
+
+from tqdm import tqdm
+from keras.preprocessing.text import Tokenizer
+
+from keras.models import Sequential
+from keras.layers import Embedding, LSTM,Dense, SpatialDropout1D, Dropout
+from keras.initializers import Constant
+
+import tensorflow as tf
+import warnings
+warnings.simplefilter('ignore')
+
+from tensorflow.keras.layers import Input, Dropout, Dense
+from tensorflow.keras.models import Model
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.callbacks import EarlyStopping
+from tensorflow.keras.initializers import TruncatedNormal
+from tensorflow.keras.losses import CategoricalCrossentropy
+from tensorflow.keras.metrics import CategoricalAccuracy
+from tensorflow.keras.utils import to_categorical
+
+import pandas as pd
+from sklearn.model_selection import train_test_split
+
+df=pd.read_csv('train.tsv', sep='\t')
+df_test=pd.read_csv('test.tsv', sep='\t')
+
+data = df[['Phrase', 'Sentiment']]
+
+
+data['Sentiment_label'] = pd.Categorical(data['Sentiment'])
+
+data['Sentiment'] = data['Sentiment_label'].cat.codes
+
+random_state = 42
+data_train, data_val = train_test_split(data, test_size = 0.42)
+
+from transformers import TFBertModel,  BertConfig, BertTokenizerFast
+
+
+model_name = 'bert-base-uncased'
+max_length = 45
+config = BertConfig.from_pretrained(model_name)
+config.output_hidden_states = False
+tokenizer = BertTokenizerFast.from_pretrained(pretrained_model_name_or_path = model_name, config = config)
+transformer_bert_model = TFBertModel.from_pretrained(model_name, config = config)
+
+Some layers from the model checkpoint at bert-base-uncased were not used when initializing TFBertModel: ['nsp___cls', 'mlm___cls']
+- This IS expected if you are initializing TFBertModel from the checkpoint of a model trained on another task or with another architecture (e.g. initializing a BertForSequenceClassification model from a BertForPreTraining model).
+- This IS NOT expected if you are initializing TFBertModel from the checkpoint of a model that you expect to be exactly identical (initializing a BertForSequenceClassification model from a BertForSequenceClassification model).
+All the layers of TFBertModel were initialized from the model checkpoint at bert-base-uncased.
+If your task is similar to the task the model of the checkpoint was trained on, you can already use TFBertModel for predictions without further training.
+
+
+
+bert = transformer_bert_model.layers[0]
+
+input_ids = Input(shape=(max_length,), name='input_ids', dtype='int32')
+inputs = {'input_ids': input_ids}
+
+
+bert_model = bert(inputs)[1]
+dropout = Dropout(config.hidden_dropout_prob, name='pooled_output')
+pooled_output = dropout(bert_model, training=False)
+
+
+
+Sentiments = Dense(units=len(data_train.Sentiment_label.value_counts()), kernel_initializer=TruncatedNormal(stddev=config.initializer_range), name='Sentiment')(pooled_output)
+outputs = {'Sentiment': Sentiments}
+model = Model(inputs=inputs, outputs=outputs, name='BERT_MultiClass')
+
+model.summary()
+
+Model: "BERT_MultiClass"
+_________________________________________________________________
+ Layer (type)                Output Shape              Param #   
+=================================================================
+ input_ids (InputLayer)      [(None, 45)]              0         
+                                                                 
+ bert (TFBertMainLayer)      TFBaseModelOutputWithPoo  109482240 
+                             lingAndCrossAttentions(l            
+                             ast_hidden_state=(None,             
+                             45, 768),                           
+                              pooler_output=(None, 76            
+                             8),                                 
+                              past_key_values=None, h            
+                             idden_states=None, atten            
+                             tions=None, cross_attent            
+                             ions=None)                          
+                                                                 
+ pooled_output (Dropout)     (None, 768)               0         
+                                                                 
+ Sentiment (Dense)           (None, 5)                 3845      
+                                                                 
+=================================================================
+Total params: 109,486,085
+Trainable params: 109,486,085
+Non-trainable params: 0
+_________________________________________________________________
+
+optimizer = tf.keras.optimizers.legacy.Adam(learning_rate=5e-05,epsilon=1e-08,decay=0.01,clipnorm=1.0)
+
+loss = {'Sentiment': CategoricalCrossentropy(from_logits = True)}
+
+model.compile(optimizer = optimizer, loss = loss, metrics = ['accuracy'])
+
+y_train = to_categorical(data_train['Sentiment'])
+
+x_train = tokenizer(
+          text=data_train['Phrase'].to_list(),
+          add_special_tokens=True,
+          max_length=max_length,
+          truncation=True,
+          padding=True, 
+          return_tensors='tf',
+          return_token_type_ids = False,
+          return_attention_mask = True,
+          verbose = True)
+
+y_val = to_categorical(data_val['Sentiment'])
+
+x_val = tokenizer(
+          text=data_val['Phrase'].to_list(),
+          add_special_tokens=True,
+          max_length=max_length,
+          truncation=True,
+          padding=True, 
+          return_tensors='tf',
+          return_token_type_ids = False,
+          return_attention_mask = True,
+          verbose = True)
+
+history = model.fit(
+    x={'input_ids': x_train['input_ids']},
+    y={'Sentiment': y_train},
+    validation_data=({'input_ids': x_val['input_ids']},{'Sentiment': y_val}),
+    batch_size=64,
+    epochs=2,
+    verbose=1)
+    
+   Epoch 1/2
+1415/1415 [==============================] - 24355s 17s/step - loss: 0.8412 - accuracy: 0.6526 - val_loss: 0.7607 - val_accuracy: 0.6818
+Epoch 2/2
+1415/1415 [==============================] - 18315s 13s/step - loss: 0.7137 - accuracy: 0.7051 - val_loss: 0.7442 - val_accuracy: 0.6889
